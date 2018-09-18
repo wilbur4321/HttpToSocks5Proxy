@@ -9,7 +9,8 @@ namespace MihaZupan.ProxyApp
         {
             var Socks5ServerAddress = "localhost";
             var Socks5ServerPort = 3448;
-            var proxy = new HttpToSocks5Proxy(Socks5ServerAddress, Socks5ServerPort);
+            var ListenPort = 4321;
+            var proxy = new HttpToSocks5Proxy(Socks5ServerAddress, Socks5ServerPort, listenPort: ListenPort);
 
             // Or if you need credentials for your proxy server:
             //var proxy = new HttpToSocks5Proxy(Socks5ServerAddress, Socks5ServerPort, "username", "password");
@@ -22,7 +23,7 @@ namespace MihaZupan.ProxyApp
 
             Console.WriteLine("Press enter to exit...");
             Console.ReadLine();
-            Console.WriteLine("Goodbyte!");
+            Console.WriteLine("Goodbye!");
         }
     }
 }
