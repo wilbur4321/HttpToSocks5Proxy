@@ -50,39 +50,38 @@ namespace MihaZupan
 
         #region Constructors
         /// <summary>
-        /// Create an Http(s) to Socks5 proxy using no authentication
+        /// Create an Http(s) to Socks5 proxy using optional authentication
         /// </summary>
         /// <param name="socks5Hostname">IP address or hostname of the Socks5 proxy server</param>
         /// <param name="socks5Port">Port of the Socks5 proxy server</param>
-        public HttpToSocks5Proxy(string socks5Hostname, int socks5Port)
+        /// <param name="listenAddress"></param>
+        /// <param name="listenPort"></param>
+        /// <param name="username"></param>
+        /// <param name="password"></param>
+        public HttpToSocks5Proxy(
+            string socks5Hostname, int socks5Port,
+            string username = null, string password = null,
+            IPAddress listenAddress = null, int listenPort = 0)
         {
             if (string.IsNullOrEmpty(socks5Hostname)) throw new ArgumentNullException("hostname");
             if (socks5Port < 0 || socks5Port > 65535) throw new ArgumentOutOfRangeException("port");
+            listenAddress = listenAddress ?? IPAddress.Any;
+            if (username != null)
+            {
+                if (password == null) throw new ArgumentNullException("password");
+                Socks5_Username = username;
+                Socks5_Password = password;
+            }
+            else if (password != null) throw new ArgumentNullException("username");
+
             Socks5_Address = Resolve(socks5Hostname);
             Socks5_Port = socks5Port;
             InternalServerSocket = CreateSocket();
-            InternalServerSocket.Bind(new IPEndPoint(IPAddress.Any, 0));
+            InternalServerSocket.Bind(new IPEndPoint(listenAddress, listenPort));
             InternalServerPort = ((IPEndPoint)(InternalServerSocket.LocalEndPoint)).Port;
-            ProxyUri = new Uri("http://127.0.0.1:" + InternalServerPort);
+            ProxyUri = (new UriBuilder("http", listenAddress.ToString(), InternalServerPort)).Uri;
             InternalServerSocket.Listen(8);
             InternalServerSocket.BeginAccept(new AsyncCallback(OnAcceptCallback), null);
-        }
-
-        /// <summary>
-        /// Create an Http(s) to Socks5 proxy using username and password authentication
-        /// <para>Will fallback to no authentication if the username and password authentication failed and the server supports it</para>
-        /// </summary>
-        /// <param name="socks5Hostname">IP address or hostname of the Socks5 proxy server</param>
-        /// <param name="socks5Port">Port of the Socks5 proxy server</param>
-        /// <param name="username"></param>
-        /// <param name="password"></param>
-        public HttpToSocks5Proxy(string socks5Hostname, int socks5Port, string username, string password)
-            : this(socks5Hostname, socks5Port)
-        {
-            if (string.IsNullOrEmpty(username)) throw new ArgumentNullException("username");
-            if (string.IsNullOrEmpty(username)) throw new ArgumentNullException("password");
-            Socks5_Username = username;
-            Socks5_Password = password;
         }
         #endregion
 
