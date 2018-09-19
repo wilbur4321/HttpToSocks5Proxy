@@ -37,6 +37,7 @@ namespace MihaZupan
         #region Internal HTTP proxy fields
         private Uri ProxyUri;
         private Socket InternalServerSocket;
+        private IPAddress InternalServerAddress;
         private int InternalServerPort;
         #endregion
 
@@ -78,8 +79,11 @@ namespace MihaZupan
             Socks5_Port = socks5Port;
             InternalServerSocket = CreateSocket();
             InternalServerSocket.Bind(new IPEndPoint(listenAddress, listenPort));
+            InternalServerAddress = ((IPEndPoint)(InternalServerSocket.LocalEndPoint)).Address;
             InternalServerPort = ((IPEndPoint)(InternalServerSocket.LocalEndPoint)).Port;
-            ProxyUri = (new UriBuilder("http", listenAddress.ToString(), InternalServerPort)).Uri;
+//            ProxyUri = (new UriBuilder("http", InternalServerAddress.ToString(), InternalServerPort)).Uri;
+// TODO: I don't know why, but it causes errors to have the IPv6 addr here!
+            ProxyUri = (new UriBuilder("http", "127.0.0.1", InternalServerPort)).Uri;
             InternalServerSocket.Listen(8);
             InternalServerSocket.BeginAccept(new AsyncCallback(OnAcceptCallback), null);
         }
@@ -88,7 +92,7 @@ namespace MihaZupan
         private static readonly HashSet<string> HopByHopHeaders = new HashSet<string>()
         {
             // ref: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers
-            "CONNECTION", "KEEP-ALIVE", "PROXY-AUTHENTICATE", "PROXY-AUTHORIZATION", "TE", "TRAILER", "TRANSFER-ENCODING", "UPGRADE"
+            "CONNECTION", "PROXY-CONNECTION", "KEEP-ALIVE", "PROXY-AUTHENTICATE", "PROXY-AUTHORIZATION", "TE", "TRAILER", "TRANSFER-ENCODING", "UPGRADE"
         };
 
         private void OnAcceptCallback(IAsyncResult AR)
@@ -104,6 +108,7 @@ namespace MihaZupan
                 TryDisposeSocket(clientSocket);
             }
         }
+
         private void HandleConnection(Socket clientSocket)
         {
             // According to https://stackoverflow.com/a/686243/6845657 even Apache gives up after 8KB
@@ -120,11 +125,13 @@ namespace MihaZupan
                 }
                 offset = received;
                 int read = clientSocket.Receive(headerBuffer, received, left, SocketFlags.None);
+                Console.WriteLine("HEADER: <<{0}>>", UTF8Encoding.UTF8.GetString(headerBuffer, received, read));
                 received += read;
                 left -= read;
             }
-            // received - 3 is used because we could have read the start of the double new line in the previous read
-            while (!ContainsDoubleNewLine(headerBuffer, Math.Max(0, received - 3), out endOfHeader));
+            while (!ContainsDoubleNewLine(headerBuffer, received, out endOfHeader));
+
+            Console.WriteLine("Read {0} header chars.", endOfHeader);
 
             // If we reach this point we can be sure that we have read the entire header
 
@@ -164,7 +171,11 @@ namespace MihaZupan
             else
             {
                 StringBuilder requestBuilder = new StringBuilder();
-                requestBuilder.Append(headerLines[0]);
+                var parts = headerLines[0].Split(' ');
+                Uri dest = new Uri(parts[1]);
+                parts[1] = dest.PathAndQuery;
+                requestBuilder.Append(String.Join(" ", parts));
+                //requestBuilder.Append(headerLines[0]);
                 for (int i = 1; i < headerLines.Length; i++)
                 {
                     int colon = headerLines[i].IndexOf(':');
@@ -258,6 +269,7 @@ namespace MihaZupan
             {
                 try
                 {
+                    Console.WriteLine("Sending {0}", request);
                     SendString(socks5Socket, request);
                     if (overRead > 0)
                     {
@@ -275,10 +287,38 @@ namespace MihaZupan
             {
                 SendString(clientSocket, httpVersion + "200 Connection established\r\nProxy-Agent: MihaZupan-HttpToSocks5Proxy\r\n\r\n");
             }
-            Task.Run(() => { RelayData(socks5Socket, clientSocket); });
-            RelayData(clientSocket, socks5Socket);
+            Task.Run(() => { RelayData(socks5Socket, clientSocket, "From server to client"); });
+            RelayData(clientSocket, socks5Socket, "From client to server");
         }
         private static bool ContainsDoubleNewLine(byte[] buffer, int offset, out int endOfHeader)
+        {
+            string data = Encoding.UTF8.GetString(buffer, 0, offset);
+
+            endOfHeader = data.LastIndexOf("\n\n");
+            if (endOfHeader != -1)
+            {
+                endOfHeader += 2;
+                return true;
+            }
+
+            endOfHeader = data.LastIndexOf("\r\n\r\n");
+            if (endOfHeader != -1)
+            {
+                endOfHeader += 4;
+                return true;
+            }
+
+            endOfHeader = data.LastIndexOf("\n\r\n");
+            if (endOfHeader != -1)
+            {
+                endOfHeader += 3;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool ContainsDoubleNewLineOld(byte[] buffer, int offset, out int endOfHeader)
         {
             // TRUE for \r\n\r\n or \n\n or \r\n\n or \n\r\n
             // Also for \r\r\r\r\n\n because \r are ignored => we only need 2x \n
@@ -309,20 +349,35 @@ namespace MihaZupan
         {
             socket.Send(Encoding.UTF8.GetBytes(text));
         }
-        private void RelayData(Socket source, Socket target)
+        private void RelayData(Socket source, Socket target, string name)
         {
             try
             {
                 int read;
                 byte[] buffer = new byte[8192];
-                while ((read = source.Receive(buffer, 0, buffer.Length, SocketFlags.None)) > 0)
+                while (true)
                 {
+                    Console.WriteLine("Starting read: {0}", name);
+                    read = source.Receive(buffer, 0, buffer.Length, SocketFlags.Partial);
+                    Console.WriteLine("Relaying {0} bytes {1}", read, name);
+                    if (read <= 0)
+                    {
+                        break;
+                    }
+
+                    Console.WriteLine(">>>>");
+                    Console.WriteLine(UTF8Encoding.UTF8.GetString(buffer, 0, read));
+                    Console.WriteLine("<<<< {0}", name);
                     target.Send(buffer, 0, read, SocketFlags.None);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Exception in RelayData: {0}", ex);
+            }
             finally
             {
+                Console.WriteLine("In finally block of RelayData");
                 TryDisposeSocket(source);
                 TryDisposeSocket(target);
             }
@@ -377,6 +432,7 @@ namespace MihaZupan
         public bool ResolveHostnamesLocally = false;
         private SocketConnectionResult TryEstablishSocks5Connection(string destAddress, int destPort, bool doUsernamePasswordAuth, out Socket socks5Socket)
         {
+            Console.WriteLine("Trying to connect to {0}:{1}", destAddress, destPort);
             socks5Socket = CreateSocket();
             try
             {
@@ -474,16 +530,19 @@ namespace MihaZupan
                         return SocketConnectionResult.InvalidProxyResponse;
                 }
 
+                Console.WriteLine("Connected to {0}:{1}", destAddress, destPort);
                 return SocketConnectionResult.OK;
             }
             catch (SocketException ex)
             {
+                Console.WriteLine("Failed to connect to {0}:{1}: {2}", destAddress, destPort, ex);
                 if (ex.SocketErrorCode == SocketError.ConnectionReset)
                     return SocketConnectionResult.ConnectionReset;
                 return SocketConnectionResult.ConnectionError;
             }
-            catch
+            catch (Exception ex)
             {
+                Console.WriteLine("Failed to connect to {0}:{1}: {2}", destAddress, destPort, ex);
                 return SocketConnectionResult.UnknownError;
             }
         }
